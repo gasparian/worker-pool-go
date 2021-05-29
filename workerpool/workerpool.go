@@ -1,8 +1,7 @@
-package main
+package workerpool
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 )
@@ -12,25 +11,25 @@ var (
 	workerIndexIsOutOfBoundsErr = errors.New("Worker index is out of bounds")
 )
 
-type jobFunc func() result
-
-type job struct {
-	f          jobFunc
-	resultChan chan result
+type Result struct {
+	Data interface{}
+	Err  error
 }
 
-type result struct {
-	data interface{}
-	err  error
+type JobFunc func() Result
+
+type Job struct {
+	F          JobFunc
+	ResultChan chan Result
 }
 
-type stats struct {
+type Stats struct {
 	ProcessedJobs    int64
 	TotalElapsedTime int64 // NOTE: nanoseconds
 }
 
 type workerStats struct {
-	stats
+	Stats
 	mx sync.RWMutex
 }
 
@@ -42,24 +41,24 @@ type WorkerPoolConfig struct {
 
 type WorkerPool struct {
 	config        WorkerPoolConfig
-	workersChan   []chan job
+	workersChan   []chan Job
 	workersStats  []*workerStats
 	terminateChan []chan bool
 }
 
-func worker(jobs chan job, terminate chan bool, s *workerStats) {
+func worker(jobs chan Job, terminate chan bool, s *workerStats) {
 	for {
 		select {
 		case j := <-jobs:
 			start := time.Now()
-			res := j.f()
+			res := j.F()
 			elapsedTime := time.Since(start).Nanoseconds()
 			s.mx.Lock()
 			s.ProcessedJobs++
 			s.TotalElapsedTime += elapsedTime
 			s.mx.Unlock()
-			j.resultChan <- res
-			close(j.resultChan)
+			j.ResultChan <- res
+			close(j.ResultChan)
 		case t := <-terminate:
 			if t {
 				return
@@ -71,12 +70,12 @@ func worker(jobs chan job, terminate chan bool, s *workerStats) {
 func NewWorkerPool(config WorkerPoolConfig) *WorkerPool {
 	pool := &WorkerPool{
 		config:        config,
-		workersChan:   make([]chan job, config.NWorkers),
+		workersChan:   make([]chan Job, config.NWorkers),
 		workersStats:  make([]*workerStats, config.NWorkers),
 		terminateChan: make([]chan bool, config.NWorkers),
 	}
 	for w := 0; w < config.NWorkers; w++ {
-		pool.workersChan[w] = make(chan job, config.MaxJobs)
+		pool.workersChan[w] = make(chan Job, config.MaxJobs)
 		pool.terminateChan[w] = make(chan bool)
 		pool.workersStats[w] = &workerStats{}
 		go worker(
@@ -96,8 +95,8 @@ func (wp WorkerPool) GetCurrentJobsNumber() int64 {
 	return currentJobsN
 }
 
-func (wp *WorkerPool) GetWorkerStats(workerId int) (stats, error) {
-	resStats := stats{}
+func (wp *WorkerPool) GetWorkerStats(workerId int) (Stats, error) {
+	resStats := Stats{}
 	if workerId > len(wp.workersChan) || workerId < 0 {
 		return resStats, workerIndexIsOutOfBoundsErr
 	}
@@ -135,7 +134,7 @@ func (wp *WorkerPool) ReloadWorker(workerId int) error {
 }
 
 type WorkerPoolManager interface {
-	ScheduleJob(f jobFunc) (chan result, error)
+	ScheduleJob(f JobFunc) (chan Result, error)
 }
 
 /*------------------------------------------------------------------------*/
@@ -154,7 +153,7 @@ func NewWorkerPoolRoundRobin(pool *WorkerPool) *RoundRobinWorkerPool {
 	}
 }
 
-func (rr *RoundRobinWorkerPool) ScheduleJob(f jobFunc) (chan result, error) {
+func (rr *RoundRobinWorkerPool) ScheduleJob(f JobFunc) (chan Result, error) {
 	rr.mx.RLock()
 	defer rr.mx.RUnlock()
 
@@ -162,60 +161,8 @@ func (rr *RoundRobinWorkerPool) ScheduleJob(f jobFunc) (chan result, error) {
 	if currentJobsN >= rr.config.MaxJobs {
 		return nil, maxJobsLimitReachedErr
 	}
-	ch := make(chan result)
-	rr.workersChan[rr.nextWorkerId] <- job{f, ch}
+	ch := make(chan Result)
+	rr.workersChan[rr.nextWorkerId] <- Job{f, ch}
 	rr.nextWorkerId = (rr.nextWorkerId + 1) % rr.config.NWorkers
 	return ch, nil
-}
-
-/*------------------------------------------------------------------------*/
-
-func ExampleJob(inp int) jobFunc {
-	return func() result {
-		res := inp * inp
-		return result{
-			data: res,
-			err:  nil,
-		}
-	}
-}
-
-/*------------------------------------------------------------------------*/
-
-/*
-TODO: check worker termination and reload
-*/
-
-func main() {
-	config := WorkerPoolConfig{
-		NWorkers:      3,
-		MaxJobs:       10,
-		MaxJobsReload: 3, // TODO: not used yet
-	}
-	wp := NewWorkerPool(config)
-	roundRobinPool := NewWorkerPoolRoundRobin(wp)
-
-	nJobs := 50
-	jobs := make([]chan result, 0)
-	for i := 0; i < nJobs; i++ {
-		ch, err := roundRobinPool.ScheduleJob(ExampleJob(i))
-		if err != nil {
-			fmt.Println("WARNING: ", err)
-			break
-		}
-		jobs = append(jobs, ch)
-	}
-
-	fmt.Println("INFO: Getting the results...")
-	for i, j := range jobs {
-		fmt.Println(i, <-j)
-	}
-
-	for w := 0; w < config.NWorkers; w++ {
-		s, err := roundRobinPool.GetWorkerStats(w)
-		if err != nil {
-			fmt.Println("WARNING: ", err)
-		}
-		fmt.Printf("Worker %v stats: %v\n", w, s)
-	}
 }
