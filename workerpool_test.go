@@ -1,6 +1,7 @@
-package wp
+package workerpool
 
 import (
+	"math"
 	"testing"
 )
 
@@ -15,13 +16,13 @@ func exampleJob(inp int) JobFunc {
 }
 
 func TestPool(t *testing.T) {
-	config := WorkerPoolConfig{
-		NWorkers:      3,
-		MaxJobs:       10,
-		MaxJobsReload: 3,
+	config := Config{
+		NWorkers: 3,
+		MaxJobs:  10,
 	}
-	wp := NewWorkerPool(config)
-	roundRobinPool := NewWorkerPoolRoundRobin(wp)
+	wp := New(config)
+	roundRobinPool := NewRoundRobin(wp)
+	var actualProcessedJobs float64 = 0.0
 
 	t.Run("RunJobsSync", func(t *testing.T) {
 		nJobs := 50
@@ -35,22 +36,23 @@ func TestPool(t *testing.T) {
 			jobs = append(jobs, ch)
 		}
 
+		if len(jobs) >= nJobs {
+			t.Error()
+		}
+		t.Logf("Number of processing jobs: %v (requested: %v)", len(jobs), nJobs)
+		actualProcessedJobs = float64(len(jobs))
+
 		t.Log("INFO: Getting the results...")
-		var processedJobsCount int = 0
 		for _, j := range jobs {
 			res := <-j
 			if res.Err != nil {
 				t.Fatal(res.Err)
 			}
-			processedJobsCount++
 		}
-		if processedJobsCount >= nJobs {
-			t.Error()
-		}
-		t.Log("Number of processed jobs: ", processedJobsCount)
 	})
 
 	t.Run("CheckStats", func(t *testing.T) {
+		var averageProcessedJobs float64 = 0.0
 		for w := 0; w < config.NWorkers; w++ {
 			s, err := roundRobinPool.GetWorkerStats(w)
 			if err != nil {
@@ -59,7 +61,14 @@ func TestPool(t *testing.T) {
 			if s.ProcessedJobs <= 0 || s.TotalElapsedTime == 0 {
 				t.Error()
 			}
+			averageProcessedJobs += float64(s.ProcessedJobs)
 			t.Logf("Worker %v stats: %v\n", w, s) // Worker 0 stats: {4 1335} ...
+		}
+		averageProcessedJobs /= float64(config.NWorkers)
+		idealAverageProcessedJobs := actualProcessedJobs / float64(config.NWorkers)
+		t.Log("Average processed jobs per worker:", averageProcessedJobs, idealAverageProcessedJobs)
+		if math.Abs(averageProcessedJobs-idealAverageProcessedJobs) > 1 {
+			t.Error()
 		}
 	})
 
@@ -82,4 +91,15 @@ func TestPool(t *testing.T) {
 	})
 
 	// TODO: add concurrency test
+	t.Run("RunJobsConcurrent", func(t *testing.T) {
+
+	})
+
+	t.Run("CheckStatsConcurrent", func(t *testing.T) {
+
+	})
+
+	t.Run("ReloadWorkerConcurrent", func(t *testing.T) {
+
+	})
 }
