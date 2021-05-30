@@ -3,7 +3,7 @@
 # worker-pool-go  
 
 Implementation of worker pool with extendable functionality.  
-By default, I've implemented "round-robin" balancing to evenely distribute jobs across workers.  
+By default, I've implemented "round-robin" balancing to evenly distribute jobs across workers.  
 You need to implement the `Manager` interface in order to use other balancing strategies:  
 ```go
 type Manager interface {

@@ -151,7 +151,7 @@ type Manager interface {
 /*------------------------------------------------------------------------*/
 // NOTE: default implmementation of the Manager
 
-// RoundRobin evenely distribute jobs across workers
+// RoundRobin evenly distribute jobs across workers
 type RoundRobin struct {
 	*WorkerPool
 	mx           sync.RWMutex
@@ -169,14 +169,19 @@ func NewRoundRobin(pool *WorkerPool) *RoundRobin {
 // ScheduleJob puts job in a queue
 func (rr *RoundRobin) ScheduleJob(f JobFunc) (chan Result, error) {
 	rr.mx.RLock()
-	defer rr.mx.RUnlock()
+	config := rr.config
+	nextWorkerId := rr.nextWorkerId
+	rr.mx.RUnlock()
 
 	currentJobsN := rr.GetCurrentJobsNumber()
-	if currentJobsN >= rr.config.MaxJobs {
+	if currentJobsN >= config.MaxJobs {
 		return nil, maxJobsLimitReachedErr
 	}
 	ch := make(chan Result)
-	rr.workersChan[rr.nextWorkerId] <- Job{f, ch}
-	rr.nextWorkerId = (rr.nextWorkerId + 1) % rr.config.NWorkers
+	rr.workersChan[nextWorkerId] <- Job{f, ch}
+
+	rr.mx.Lock()
+	rr.nextWorkerId = (nextWorkerId + 1) % config.NWorkers
+	rr.mx.Unlock()
 	return ch, nil
 }
