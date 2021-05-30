@@ -1,4 +1,4 @@
-package workerpool
+package wp
 
 import (
 	"testing"
@@ -80,4 +80,6 @@ func TestPool(t *testing.T) {
 			t.Error()
 		}
 	})
+
+	// TODO: add concurrency test
 }
