@@ -1,3 +1,5 @@
+![tests](https://github.com/gasparian/worker-pool-go/actions/workflows/test.yml/badge.svg?branch=main)
+
 # worker-pool-go  
 
 Implementation of worker pool with extendable functionality.  
