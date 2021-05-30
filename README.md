@@ -21,7 +21,6 @@ func (wp *WorkerPool) ReloadWorker(workerId int) error
 
 func NewRoundRobin(pool *WorkerPool) *RoundRobin
 func (rr *RoundRobin) ScheduleJob(f JobFunc) (chan Result, error)
-
 ```  
 
 Install:  
@@ -54,8 +53,8 @@ func main() {
         MaxJobs:  10, // Max jobs in a queue, new jobs will be rejected with error
     }
     pool := wp.New(config)
-    roundRobinPool := NewRoundRobin(pool)
-    
+    roundRobinPool := wp.NewRoundRobin(pool)
+
     nJobs := 50
     jobs := make([]chan wp.Result, 0)
     for i := 0; i < nJobs; i++ {
@@ -69,6 +68,14 @@ func main() {
     for _, j := range jobs {
         res := <-j
         fmt.Println(res)
+    }
+
+    for w := 0; w < config.NWorkers; w++ {
+        s, err := roundRobinPool.GetWorkerStats(w)
+        if err != nil {
+            panic(err)
+        }
+        fmt.Printf("Worker %v stats: %v\n", w, s)
     }
 }
 ```  
