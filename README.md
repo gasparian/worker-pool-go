@@ -13,14 +13,14 @@ type Manager interface {
 
 API:  
 ```go
-func New(config Config) *WorkerPool
-func (wp WorkerPool) GetCurrentJobsNumber() int64
-func (wp *WorkerPool) GetWorkerStats(workerId int) (Stats, error)
-func (wp *WorkerPool) TerminateWorker(workerId int) error
-func (wp *WorkerPool) ReloadWorker(workerId int) error
+New(config Config) *WorkerPool
+(wp WorkerPool) GetCurrentJobsNumber() int64
+(wp *WorkerPool) GetWorkerStats(workerId int) (Stats, error)
+(wp *WorkerPool) TerminateWorker(workerId int) error
+(wp *WorkerPool) ReloadWorker(workerId int) error
 
-func NewRoundRobin(pool *WorkerPool) *RoundRobin
-func (rr *RoundRobin) ScheduleJob(f JobFunc) (chan Result, error)
+NewRoundRobin(pool *WorkerPool) *RoundRobin
+(rr *RoundRobin) ScheduleJob(f JobFunc) (chan Result, error)
 ```  
 
 Install:  
