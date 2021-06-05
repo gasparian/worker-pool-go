@@ -28,13 +28,8 @@ type Job struct {
 
 // Stats holds basic stats for the worker
 type Stats struct {
-	ProcessedJobs    int64
-	TotalElapsedTime int64 // NOTE: nanoseconds
-}
-
-type workerStats struct {
-	Stats
-	mx sync.RWMutex
+	ProcessedJobs          int64
+	TotalJobsExecutionTime int64 // NOTE: nanoseconds
 }
 
 // Config holds needed data to start worker pool
@@ -43,8 +38,14 @@ type Config struct {
 	MaxJobs  int64
 }
 
-// WorkerPool holds data needed for pool operation
-type WorkerPool struct {
+type workerStats struct {
+	Stats
+	mx sync.RWMutex
+}
+
+// workerPool holds data needed for pool operation
+type workerPool struct {
+	mx            sync.RWMutex
 	config        Config
 	workersChan   []chan Job
 	workersStats  []*workerStats
@@ -60,7 +61,7 @@ func worker(jobs chan Job, terminate chan bool, s *workerStats) {
 			elapsedTime := time.Since(start).Nanoseconds()
 			s.mx.Lock()
 			s.ProcessedJobs++
-			s.TotalElapsedTime += elapsedTime
+			s.TotalJobsExecutionTime += elapsedTime
 			s.mx.Unlock()
 			j.ResultChan <- res
 			close(j.ResultChan)
@@ -72,9 +73,80 @@ func worker(jobs chan Job, terminate chan bool, s *workerStats) {
 	}
 }
 
-// New created new worker pool
-func New(config Config) *WorkerPool {
-	pool := &WorkerPool{
+// getCurrentJobsAmount calculates amount of jobs across all workers queues
+func (wp *workerPool) getCurrentJobsAmount() int64 {
+	wp.mx.RLock()
+	defer wp.mx.RUnlock()
+
+	var currentJobsAmount int64 = 0
+	for _, ch := range wp.workersChan {
+		currentJobsAmount += int64(len(ch))
+	}
+	return currentJobsAmount
+}
+
+// getWorkerStats by specified worker id
+func (wp *workerPool) getWorkerStats(workerId int) (Stats, error) {
+	resStats := Stats{}
+	if workerId > len(wp.workersChan) || workerId < 0 {
+		return resStats, workerIndexIsOutOfBoundsErr
+	}
+	wp.mx.RLock()
+	s := wp.workersStats[workerId]
+	wp.mx.RUnlock()
+
+	s.mx.RLock()
+	defer s.mx.RUnlock()
+	resStats.ProcessedJobs = s.ProcessedJobs
+	resStats.TotalJobsExecutionTime = s.TotalJobsExecutionTime
+	return resStats, nil
+}
+
+// terminateWorker sends termination signal to the specified worker
+func (wp *workerPool) terminateWorker(workerId int) error {
+	if workerId > len(wp.terminateChan) || workerId < 0 {
+		return workerIndexIsOutOfBoundsErr
+	}
+	wp.mx.RLock()
+	wp.terminateChan[workerId] <- true
+	wp.mx.RUnlock()
+	return nil
+}
+
+// reloadWorker terminates worker by id, and spawns new one
+func (wp *workerPool) reloadWorker(workerId int) error {
+	if workerId > len(wp.workersChan) || workerId < 0 {
+		return workerIndexIsOutOfBoundsErr
+	}
+	err := wp.terminateWorker(workerId)
+	if err != nil {
+		return err
+	}
+	wp.mx.Lock()
+	wp.workersStats[workerId] = &workerStats{}
+	wp.mx.Unlock()
+	go worker(
+		wp.workersChan[workerId],
+		wp.terminateChan[workerId],
+		wp.workersStats[workerId],
+	)
+	return nil
+}
+
+// Strategy interface that holds implementation of balancing strategy
+type BalancingStrategy interface {
+	NextWorkerId(workersStats []Stats) int
+}
+
+// Manager spawns workers and schedule jobs
+type Manager struct {
+	wp       *workerPool
+	balancer BalancingStrategy
+}
+
+// New creates new worker pool
+func New(config Config, balancer BalancingStrategy) *Manager {
+	pool := &workerPool{
 		config:        config,
 		workersChan:   make([]chan Job, config.NWorkers),
 		workersStats:  make([]*workerStats, config.NWorkers),
@@ -90,98 +162,58 @@ func New(config Config) *WorkerPool {
 			pool.workersStats[w],
 		)
 	}
-	return pool
+	manager := &Manager{
+		wp:       pool,
+		balancer: balancer,
+	}
+	// TODO: add routine that reloads workers
+	return manager
 }
 
-// GetCurrentJobsNumber calculates amount of jobs across all workers queues
-func (wp WorkerPool) GetCurrentJobsNumber() int64 {
-	var currentJobsN int64 = 0
-	for _, ch := range wp.workersChan {
-		currentJobsN += int64(len(ch))
+// ScheduleJob puts job in a queue
+func (m *Manager) ScheduleJob(f JobFunc) (chan Result, error) {
+	m.wp.mx.RLock()
+	config := m.wp.config
+	workersStats := make([]Stats, config.NWorkers)
+	for i, s := range m.wp.workersStats {
+		s.mx.RLock()
+		workersStats[i] = s.Stats
+		s.mx.RUnlock()
 	}
-	return currentJobsN
-}
+	m.wp.mx.RUnlock()
 
-// GetWorkerStats  by specified worker id
-func (wp *WorkerPool) GetWorkerStats(workerId int) (Stats, error) {
-	resStats := Stats{}
-	if workerId > len(wp.workersChan) || workerId < 0 {
-		return resStats, workerIndexIsOutOfBoundsErr
+	currentJobsAmount := m.wp.getCurrentJobsAmount()
+	if currentJobsAmount >= config.MaxJobs {
+		return nil, maxJobsLimitReachedErr
 	}
-	s := wp.workersStats[workerId]
-	s.mx.RLock()
-	defer s.mx.RUnlock()
-	resStats.ProcessedJobs = s.ProcessedJobs
-	resStats.TotalElapsedTime = s.TotalElapsedTime
-	return resStats, nil
-}
+	ch := make(chan Result)
 
-// TerminateWorker sends termination signal to the specified worker
-func (wp *WorkerPool) TerminateWorker(workerId int) error {
-	if workerId > len(wp.terminateChan) || workerId < 0 {
-		return workerIndexIsOutOfBoundsErr
-	}
-	wp.terminateChan[workerId] <- true
-	return nil
-}
-
-// ReloadWorker terminates worker by id, and spawns new one
-func (wp *WorkerPool) ReloadWorker(workerId int) error {
-	if workerId > len(wp.workersChan) || workerId < 0 {
-		return workerIndexIsOutOfBoundsErr
-	}
-	err := wp.TerminateWorker(workerId)
-	if err != nil {
-		return err
-	}
-	wp.workersStats[workerId] = &workerStats{}
-	go worker(
-		wp.workersChan[workerId],
-		wp.terminateChan[workerId],
-		wp.workersStats[workerId],
-	)
-	return nil
-}
-
-// Manafer interface that holds implementation of balancing strategy
-type Manager interface {
-	ScheduleJob(f JobFunc) (chan Result, error)
+	nextWorkerId := m.balancer.NextWorkerId(workersStats)
+	m.wp.workersChan[nextWorkerId] <- Job{f, ch}
+	return ch, nil
 }
 
 /*------------------------------------------------------------------------*/
-// NOTE: default implmementation of the Manager
 
-// RoundRobin evenly distribute jobs across workers
+// NOTE: default balancing strategy
+
+// RoundRobin evenly distributes jobs across workers
 type RoundRobin struct {
-	*WorkerPool
 	mx           sync.RWMutex
 	nextWorkerId int
 }
 
 // NewRoundRobin ...
-func NewRoundRobin(pool *WorkerPool) *RoundRobin {
-	return &RoundRobin{
-		WorkerPool:   pool,
-		nextWorkerId: 0,
-	}
+func NewRoundRobin() *RoundRobin {
+	return &RoundRobin{nextWorkerId: 0}
 }
 
-// ScheduleJob puts job in a queue
-func (rr *RoundRobin) ScheduleJob(f JobFunc) (chan Result, error) {
-	rr.mx.RLock()
-	config := rr.config
-	nextWorkerId := rr.nextWorkerId
-	rr.mx.RUnlock()
-
-	currentJobsN := rr.GetCurrentJobsNumber()
-	if currentJobsN >= config.MaxJobs {
-		return nil, maxJobsLimitReachedErr
-	}
-	ch := make(chan Result)
-	rr.workersChan[nextWorkerId] <- Job{f, ch}
-
+// NextWorkerId generates worker id to schedule the job
+func (rr *RoundRobin) NextWorkerId(workerStats []Stats) int {
 	rr.mx.Lock()
-	rr.nextWorkerId = (nextWorkerId + 1) % config.NWorkers
-	rr.mx.Unlock()
-	return ch, nil
+	defer rr.mx.Unlock()
+
+	workerId := rr.nextWorkerId
+	rr.nextWorkerId = (workerId + 1) % len(workerStats)
+	return workerId
 }
