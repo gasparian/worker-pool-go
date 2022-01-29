@@ -7,7 +7,6 @@ import (
 )
 
 var (
-	maxJobsLimitReachedErr      = errors.New("Maximum number of running jobs has been reached")
 	workerIndexIsOutOfBoundsErr = errors.New("Worker index is out of bounds")
 )
 
@@ -53,36 +52,25 @@ type workerPool struct {
 }
 
 func worker(jobs chan Job, terminate chan bool, s *workerStats) {
+	var job Job
 	for {
 		select {
-		case j := <-jobs:
+		case job = <-jobs:
 			start := time.Now()
-			res := j.F()
+			res := job.F()
 			elapsedTime := time.Since(start).Nanoseconds()
 			s.mx.Lock()
 			s.ProcessedJobs++
 			s.TotalJobsExecutionTime += elapsedTime
 			s.mx.Unlock()
-			j.ResultChan <- res
-			close(j.ResultChan)
+			job.ResultChan <- res
+			close(job.ResultChan)
 		case t := <-terminate:
 			if t {
 				return
 			}
 		}
 	}
-}
-
-// getCurrentJobsAmount calculates amount of jobs across all workers queues
-func (wp *workerPool) getCurrentJobsAmount() int64 {
-	wp.mx.RLock()
-	defer wp.mx.RUnlock()
-
-	var currentJobsAmount int64 = 0
-	for _, ch := range wp.workersChan {
-		currentJobsAmount += int64(len(ch))
-	}
-	return currentJobsAmount
 }
 
 // getWorkerStats by specified worker id
@@ -171,7 +159,7 @@ func New(config Config, balancer BalancingStrategy) *Manager {
 }
 
 // ScheduleJob puts job in a queue
-func (m *Manager) ScheduleJob(f JobFunc) (chan Result, error) {
+func (m *Manager) ScheduleJob(f JobFunc) chan Result {
 	m.wp.mx.RLock()
 	config := m.wp.config
 	workersStats := make([]Stats, config.NWorkers)
@@ -181,16 +169,10 @@ func (m *Manager) ScheduleJob(f JobFunc) (chan Result, error) {
 		s.mx.RUnlock()
 	}
 	m.wp.mx.RUnlock()
-
-	currentJobsAmount := m.wp.getCurrentJobsAmount()
-	if currentJobsAmount >= config.MaxJobs {
-		return nil, maxJobsLimitReachedErr
-	}
-	ch := make(chan Result)
-
+	ch := make(chan Result, 1)
 	nextWorkerId := m.balancer.NextWorkerId(workersStats)
 	m.wp.workersChan[nextWorkerId] <- Job{f, ch}
-	return ch, nil
+	return ch
 }
 
 /*------------------------------------------------------------------------*/

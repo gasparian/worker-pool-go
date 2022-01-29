@@ -20,10 +20,20 @@ API:
 (wp *workerPool) reloadWorker(workerId int) error
 
 // key public structs and methods
+// Config holds worker pool params, like 
+// it's size and max jobs per worker (without blocking)
+type Config struct {
+	NWorkers int
+	MaxJobs  int64
+}
+// New creates new instance of workers pool manager
 New(config Config, balancer BalancingStrategy) *Manager
+// ScheduleJob puts new job in some worker queue
 (m *Manager) ScheduleJob(f JobFunc) (chan Result, error)
-
+// NewRoundRobin creates new instance of the "load balancer"
 NewRoundRobin() *RoundRobin
+// NextWorkerId returns worker id selected by some
+// predefined policy
 (rr *RoundRobin) NextWorkerId(workerStats []Stats) int
 ```  
 
@@ -54,19 +64,19 @@ func exampleJob(inp int) wp.JobFunc {
 
 func main() {
     config := wp.Config{
-        NWorkers: 3,  // Number of workers to spawn
-        MaxJobs:  10, // Max jobs in a queue, new jobs will be rejected with an error
+        NWorkers: 3,  // NOTE: Number of workers to spawn
+        MaxJobs:  10, // NOTE: Max length of the buffered 
+                      //       channel with submitted jobs (per worker)
     }
     balancer := wp.NewRoundRobin()
     pool := wp.New(config, balancer)
 
+    // NOTE: if number of jobs per woker will be > MaxJobs, 
+    //       ScheduleJob func will block
     nJobs := 50
     results := make([]chan wp.Result, 0)
     for i := 0; i < nJobs; i++ {
-        ch, err := pool.ScheduleJob(exampleJob(i))
-        if err != nil {
-            break
-        }
+        ch := pool.ScheduleJob(exampleJob(i))
         results = append(results, ch)
     }
     
