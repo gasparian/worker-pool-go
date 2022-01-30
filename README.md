@@ -59,12 +59,11 @@ func exampleJob(inp int) wp.JobFunc {
 }
 
 func main() {
-    pool := wp.New(config, balancer)
-	pool := NewWorkerPool(
-		3,
-		10,
-		NewRoundRobin(),
-	)
+    pool := NewWorkerPool(
+        3,
+        10,
+        NewRoundRobin(),
+    )
 
     // NOTE: if number of jobs per woker will be > MaxJobs, 
     //       ScheduleJob func will block
