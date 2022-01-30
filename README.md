@@ -14,22 +14,18 @@ type BalancingStrategy interface {
 API:  
 ```go
 // worker pool struct private api
-(wp *workerPool) getCurrentJobsNumber() int64
-(wp *workerPool) getWorkerStats(workerId int) (Stats, error)
-(wp *workerPool) terminateWorker(workerId int) error
-(wp *workerPool) reloadWorker(workerId int) error
+(wp *WorkerPool) getCurrentJobsNumber() int64
+(wp *WorkerPool) getWorkerStats(workerId int) (Stats, error)
+(wp *WorkerPool) terminateWorker(workerId int) error
+(wp *WorkerPool) reloadWorker(workerId int) error
 
-// key public structs and methods
-// Config holds worker pool params, like 
-// it's size and max jobs per worker (without blocking)
-type Config struct {
-	NWorkers int
-	MaxJobs  int64
-}
-// New creates new instance of workers pool manager
-New(config Config, balancer BalancingStrategy) *Manager
+// worker pool public methods
+// New creates new instance of workers pool
+// params defining it's size and max jobs per worker (without blocking)
+NewWorkerPool(nWorkers, maxJobs uint, balancer BalancingStrategy) *WorkerPool
 // ScheduleJob puts new job in some worker queue
-(m *Manager) ScheduleJob(f JobFunc) (chan Result, error)
+(wp *WorkerPool) ScheduleJob(f JobFunc) (chan Result, error)
+
 // NewRoundRobin creates new instance of the "load balancer"
 NewRoundRobin() *RoundRobin
 // NextWorkerId returns worker id selected by some
@@ -63,13 +59,12 @@ func exampleJob(inp int) wp.JobFunc {
 }
 
 func main() {
-    config := wp.Config{
-        NWorkers: 3,  // NOTE: Number of workers to spawn
-        MaxJobs:  10, // NOTE: Max length of the buffered 
-                      //       channel with submitted jobs (per worker)
-    }
-    balancer := wp.NewRoundRobin()
     pool := wp.New(config, balancer)
+	pool := NewWorkerPool(
+		3,
+		10,
+		NewRoundRobin(),
+	)
 
     // NOTE: if number of jobs per woker will be > MaxJobs, 
     //       ScheduleJob func will block

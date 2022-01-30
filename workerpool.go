@@ -27,14 +27,13 @@ type Job struct {
 
 // Stats holds basic stats for the worker
 type Stats struct {
-	ProcessedJobs          int64
+	ProcessedJobs          uint
 	TotalJobsExecutionTime int64 // NOTE: nanoseconds
 }
 
-// Config holds needed data to start worker pool
-type Config struct {
-	NWorkers int
-	MaxJobs  int64
+// Strategy interface that holds implementation of balancing strategy
+type BalancingStrategy interface {
+	NextWorkerId(workersStats []Stats) int
 }
 
 type workerStats struct {
@@ -43,12 +42,36 @@ type workerStats struct {
 }
 
 // workerPool holds data needed for pool operation
-type workerPool struct {
+type WorkerPool struct {
 	mx            sync.RWMutex
-	config        Config
+	nWorkers      uint
 	workersChan   []chan Job
 	workersStats  []*workerStats
 	terminateChan []chan bool
+	balancer      BalancingStrategy
+}
+
+// NewWorkerPool creates new worker pool
+func NewWorkerPool(nWorkers, maxJobs uint, balancer BalancingStrategy) *WorkerPool {
+	pool := &WorkerPool{
+		nWorkers:      nWorkers,
+		workersChan:   make([]chan Job, nWorkers),
+		workersStats:  make([]*workerStats, nWorkers),
+		terminateChan: make([]chan bool, nWorkers),
+		balancer:      balancer,
+	}
+	var w uint
+	for w = 0; w < nWorkers; w++ {
+		pool.workersChan[w] = make(chan Job, maxJobs)
+		pool.terminateChan[w] = make(chan bool)
+		pool.workersStats[w] = &workerStats{}
+		go worker(
+			pool.workersChan[w],
+			pool.terminateChan[w],
+			pool.workersStats[w],
+		)
+	}
+	return pool
 }
 
 func worker(jobs chan Job, terminate chan bool, s *workerStats) {
@@ -74,7 +97,7 @@ func worker(jobs chan Job, terminate chan bool, s *workerStats) {
 }
 
 // getWorkerStats by specified worker id
-func (wp *workerPool) getWorkerStats(workerId int) (Stats, error) {
+func (wp *WorkerPool) getWorkerStats(workerId int) (Stats, error) {
 	resStats := Stats{}
 	if workerId > len(wp.workersChan) || workerId < 0 {
 		return resStats, workerIndexIsOutOfBoundsErr
@@ -91,7 +114,7 @@ func (wp *workerPool) getWorkerStats(workerId int) (Stats, error) {
 }
 
 // terminateWorker sends termination signal to the specified worker
-func (wp *workerPool) terminateWorker(workerId int) error {
+func (wp *WorkerPool) terminateWorker(workerId int) error {
 	if workerId > len(wp.terminateChan) || workerId < 0 {
 		return workerIndexIsOutOfBoundsErr
 	}
@@ -102,7 +125,7 @@ func (wp *workerPool) terminateWorker(workerId int) error {
 }
 
 // reloadWorker terminates worker by id, and spawns new one
-func (wp *workerPool) reloadWorker(workerId int) error {
+func (wp *WorkerPool) reloadWorker(workerId int) error {
 	if workerId > len(wp.workersChan) || workerId < 0 {
 		return workerIndexIsOutOfBoundsErr
 	}
@@ -121,57 +144,20 @@ func (wp *workerPool) reloadWorker(workerId int) error {
 	return nil
 }
 
-// Strategy interface that holds implementation of balancing strategy
-type BalancingStrategy interface {
-	NextWorkerId(workersStats []Stats) int
-}
-
-// Manager spawns workers and schedule jobs
-type Manager struct {
-	wp       *workerPool
-	balancer BalancingStrategy
-}
-
-// New creates new worker pool
-func New(config Config, balancer BalancingStrategy) *Manager {
-	pool := &workerPool{
-		config:        config,
-		workersChan:   make([]chan Job, config.NWorkers),
-		workersStats:  make([]*workerStats, config.NWorkers),
-		terminateChan: make([]chan bool, config.NWorkers),
-	}
-	for w := 0; w < config.NWorkers; w++ {
-		pool.workersChan[w] = make(chan Job, config.MaxJobs)
-		pool.terminateChan[w] = make(chan bool)
-		pool.workersStats[w] = &workerStats{}
-		go worker(
-			pool.workersChan[w],
-			pool.terminateChan[w],
-			pool.workersStats[w],
-		)
-	}
-	manager := &Manager{
-		wp:       pool,
-		balancer: balancer,
-	}
-	// TODO: add routine that reloads workers
-	return manager
-}
-
 // ScheduleJob puts job in a queue
-func (m *Manager) ScheduleJob(f JobFunc) chan Result {
-	m.wp.mx.RLock()
-	config := m.wp.config
-	workersStats := make([]Stats, config.NWorkers)
-	for i, s := range m.wp.workersStats {
+func (wp *WorkerPool) ScheduleJob(f JobFunc) chan Result {
+	wp.mx.RLock()
+	nWorkers := wp.nWorkers
+	workersStats := make([]Stats, nWorkers)
+	for i, s := range wp.workersStats {
 		s.mx.RLock()
 		workersStats[i] = s.Stats
 		s.mx.RUnlock()
 	}
-	m.wp.mx.RUnlock()
+	wp.mx.RUnlock()
 	ch := make(chan Result, 1)
-	nextWorkerId := m.balancer.NextWorkerId(workersStats)
-	m.wp.workersChan[nextWorkerId] <- Job{f, ch}
+	nextWorkerId := wp.balancer.NextWorkerId(workersStats)
+	wp.workersChan[nextWorkerId] <- Job{f, ch}
 	return ch
 }
 

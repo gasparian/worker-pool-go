@@ -24,13 +24,13 @@ func exampleJob(inp int) JobFunc {
 }
 
 func TestPool(t *testing.T) {
-	config := Config{
-		NWorkers: 3,
-		MaxJobs:  10,
-	}
-	balancer := NewRoundRobin()
-	roundRobinPool := New(config, balancer)
-	wp := roundRobinPool.wp
+	nWorkers := 3
+	maxJobs := 10
+	wp := NewWorkerPool(
+		uint(nWorkers),
+		uint(maxJobs),
+		NewRoundRobin(),
+	)
 
 	var actualProcessedJobs float64 = 0.0
 	nJobs := 50
@@ -38,7 +38,7 @@ func TestPool(t *testing.T) {
 	t.Run("RunJobsSync", func(t *testing.T) {
 		results := make([]chan Result, 0)
 		for i := 0; i < nJobs; i++ {
-			ch := roundRobinPool.ScheduleJob(exampleJob(i))
+			ch := wp.ScheduleJob(exampleJob(i))
 			results = append(results, ch)
 		}
 
@@ -57,7 +57,7 @@ func TestPool(t *testing.T) {
 
 	t.Run("CheckStats", func(t *testing.T) {
 		var averageProcessedJobs float64 = 0.0
-		for w := 0; w < config.NWorkers; w++ {
+		for w := 0; w < nWorkers; w++ {
 			s, err := wp.getWorkerStats(w)
 			if err != nil {
 				t.Fatal(err)
@@ -68,8 +68,8 @@ func TestPool(t *testing.T) {
 			averageProcessedJobs += float64(s.ProcessedJobs)
 			t.Logf("Worker %v stats: %v\n", w, s) // Worker 0 stats: {4 1335} ...
 		}
-		averageProcessedJobs /= float64(config.NWorkers)
-		idealAverageProcessedJobs := actualProcessedJobs / float64(config.NWorkers)
+		averageProcessedJobs /= float64(nWorkers)
+		idealAverageProcessedJobs := actualProcessedJobs / float64(nWorkers)
 		t.Log("Average processed jobs per worker:", averageProcessedJobs, idealAverageProcessedJobs)
 		if math.Abs(averageProcessedJobs-idealAverageProcessedJobs) > 1 {
 			t.Error(jobsDistributionNotEvenErr)
@@ -95,7 +95,7 @@ func TestPool(t *testing.T) {
 	})
 
 	t.Run("RunJobsConcurrent", func(t *testing.T) {
-		for w := 0; w < config.NWorkers; w++ {
+		for w := 0; w < nWorkers; w++ {
 			err := wp.reloadWorker(w)
 			if err != nil {
 				t.Fatal(err)
@@ -108,7 +108,7 @@ func TestPool(t *testing.T) {
 			wg.Add(1)
 			go func(idx int, wg *sync.WaitGroup) {
 				defer wg.Done()
-				ch := roundRobinPool.ScheduleJob(exampleJob(idx))
+				ch := wp.ScheduleJob(exampleJob(idx))
 				jobs <- ch
 			}(i, &wg)
 		}
@@ -122,7 +122,7 @@ func TestPool(t *testing.T) {
 			}
 		}
 
-		for w := 0; w < config.NWorkers; w++ {
+		for w := 0; w < nWorkers; w++ {
 			s, err := wp.getWorkerStats(w)
 			if err != nil {
 				t.Fatal(err)
@@ -135,9 +135,9 @@ func TestPool(t *testing.T) {
 
 	t.Run("CheckStatsConcurrent", func(t *testing.T) {
 		wg := sync.WaitGroup{}
-		stats := make(chan Stats, config.NWorkers)
-		errs := make(chan error, config.NWorkers)
-		for w := 0; w < config.NWorkers; w++ {
+		stats := make(chan Stats, nWorkers)
+		errs := make(chan error, nWorkers)
+		for w := 0; w < nWorkers; w++ {
 			wg.Add(1)
 			go func(w int, wg *sync.WaitGroup) {
 				defer wg.Done()
@@ -167,8 +167,8 @@ func TestPool(t *testing.T) {
 
 	t.Run("ReloadWorkerConcurrent", func(t *testing.T) {
 		wg := sync.WaitGroup{}
-		errs := make(chan error, config.NWorkers)
-		for w := 0; w < config.NWorkers; w++ {
+		errs := make(chan error, nWorkers)
+		for w := 0; w < nWorkers; w++ {
 			wg.Add(1)
 			go func(w int, wg *sync.WaitGroup) {
 				defer wg.Done()
@@ -185,7 +185,7 @@ func TestPool(t *testing.T) {
 			}
 		}
 
-		for w := 0; w < config.NWorkers; w++ {
+		for w := 0; w < nWorkers; w++ {
 			s, err := wp.getWorkerStats(w)
 			if err != nil {
 				t.Fatal(err)
